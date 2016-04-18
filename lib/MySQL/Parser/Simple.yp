@@ -1,0 +1,219 @@
+
+# Token declarations:
+%token SELECT FROM WHERE
+#  GROUPBY HAVING ORDERBY LIMIT
+
+# Starting production rule
+%start main
+
+%{
+
+# PERL HEADER CODE ===========================================================
+
+# USE ========================================================================
+use warnings;
+use Carp;
+
+# ============================================================================
+our $VERSION = '1.00';
+
+# CONSTANTS ==================================================================
+
+# Error messages
+my $_ERR_WRONG_SYNTAX           = 'Syntax error near: _ERROR_';
+my $_ERR_END_OF_INPUT           = 'End of input reached';
+my $_ERR_TOKEN_EXPECTED         = 'Expected: _ERROR_';
+my $_ERR_UNRECOGNISED_EXPRESION = 'Unrecognized expression: _ERROR_';
+
+# END OF PERL HEADER =========================================================
+
+%}
+
+%%
+main:
+	select_stmt
+;
+
+select_stmt:
+	SELECT select_expr_list |
+	SELECT select_expr_list FROM WHERE
+;
+
+select_expr_list:
+	select_expr |
+	select_expr_list COMMA select_expr
+;
+
+select_expr:
+;
+
+%%
+
+# ============================================================================
+sub set_input {
+
+	my ($self, $input) = @_;
+
+	my $input_fh;
+	if ($input) {
+		if (ref $input) {
+			if ( ref $input eq 'SCALAR') {
+				open($input_fh, '<', $input) or croak 'Cannot open string ref for reading!';
+			} elsif (ref $input eq 'IO' or ref $input eq 'GLOB') {
+				$input_fh = $input;
+			} else {
+				croak 'Unrecognized REF for input: ' . ref $input;
+			}
+		} else {
+			# It's a filename
+			open($input_fh, '<', $input) or croak "Cannot open file $input for reading!";
+		}
+	} else {
+		$input_fh = \*STDIN;
+	}
+
+	$self -> YYData -> {'INPUT_HANDLE'}  = $input_fh;
+	return;
+
+}
+
+# ============================================================================
+sub process {
+
+	my ($self, $input) = @_;
+
+	# INPUT selection
+	$self -> set_input($input);
+
+	# Reset current line
+	$self -> YYData -> {'INPUT_LINE'} = undef;
+
+	# Reset errors from previous runs:
+	$self -> YYData -> {'errors'} = [];
+
+	# Do the job:
+	return $self -> YYParse(
+		yylex   => \&verbose_lexer,
+		yyerror => \&_error,
+		yydebug => 0x00
+	);
+
+	# Debug:
+	# Bit Value    Outputs
+	# 0x01         Token reading (useful for Lexer debugging)
+	# 0x02         States information
+	# 0x04         Driver actions (shifts, reduces, accept...)
+	# 0x08         Parse Stack dump
+	# 0x10         Error Recovery tracing
+	# To have a full debugging ouput, use
+	# debug => 0x1F
+
+}
+
+# ============================================================================
+sub _error {
+
+	my ($self) = @_;
+
+	# Token read:
+	my $token = $self -> YYCurtok;
+
+	# Value of token read
+	my $value = $self -> YYCurval;
+
+	# input not consumed
+	my $input = $self -> YYData -> {INPUT} || $value;
+
+	# list of expected tokens
+	my $expected = join "' o '", grep { !/error/ } $self -> YYExpect;
+
+	$self -> _add_error( $_ERR_WRONG_SYNTAX, ($input || $_ERR_END_OF_INPUT) );
+	$self -> _add_error( $_ERR_TOKEN_EXPECTED, $expected );
+
+	exists $self -> YYData -> {ERRMSG} &&
+	do {
+		my $description = $self -> YYData -> {ERRMSG};
+		$self -> _add_error($description);
+		delete $self -> YYData -> {ERRMSG};
+		return;
+	};
+	return;
+
+}
+
+sub _add_error {
+
+	my ($self, $msg, @stubs) = @_;
+
+	while (my $val = shift @stubs)  {
+		$msg =~ s/_ERROR_/'$val'/;
+	}
+	$msg =~ s/_ERROR_//g;
+
+	unshift @{$self -> YYData -> {'errors'}}, $msg;
+	return;
+
+}
+
+sub get_errors {
+	my $self = shift;
+	return $self -> YYData -> {'errors'};
+}
+
+# ============================================================================
+sub verbose_lexer {
+	my ($self) = @_;
+
+	my ($token, $extra) = $self -> lexer();
+	warn "[LEXER] token = '$token'";
+	return ($token, $extra);
+
+}
+
+sub lexer {
+
+	my ($self) = @_;
+
+	# ==========================================================================
+	my $io_handle = $self -> YYData -> {'INPUT_HANDLE'};
+
+	# ==========================================================================
+	do {
+		while ( $self -> YYData -> {'INPUT_LINE'} ) {
+
+			# ========================================================================
+			next unless $self -> YYData -> {'INPUT_LINE'};
+
+			# ========================================================================
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(SELECT)\s*//i   && return('SELECT',   $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(FROM)\s*//i     && return('FROM',     $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(WHERE)\s*//i    && return('WHERE',    $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(GROUP BY)\s*//i && return('GROUPBY',  $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(HAVING)\s*//i   && return('HAVING',   $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(ORDER BY)\s*//i && return('ORDERBY',  $1);
+			$self -> YYData -> {'INPUT_LINE'} =~ s/^(LIMIT)\s*//i    && return('LIMIT',    $1);
+
+			# ========================================================================
+			# If could not recognize a token and there is still something to read
+			# there is an error in the expression
+			$self -> _add_error( $_ERR_UNRECOGNISED_EXPRESION, $_) if $self -> YYData -> {'INPUT_LINE'};
+
+			# ========================================================================
+			# As mentioned in the Parse::Yacc help
+			# we should return ('', undef) at the end
+			return('', undef);
+		}
+
+	} while ( $self -> YYData -> {'INPUT_LINE'} = <$io_handle> );
+
+	# EOF
+	return('', undef);
+
+}
+
+# ============================================================================
+
+1;
+
+__END__
+
